@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use databend_common_expression::types::decimal::DecimalScalar;
 use databend_common_expression::types::DataType;
 use databend_common_expression::types::NumberScalar;
 use databend_common_expression::RemoteExpr;
@@ -19,6 +20,8 @@ use databend_common_expression::Scalar;
 use iceberg::expr::Predicate;
 use iceberg::expr::Reference;
 use iceberg::spec::Datum;
+use iceberg::spec::PrimitiveLiteral;
+use iceberg::spec::PrimitiveType;
 use log::debug;
 
 pub struct PredicateBuilder;
@@ -229,6 +232,7 @@ fn scalar_to_datatum(scalar: &Scalar) -> Option<Datum> {
             NumberScalar::Float64(f) => Datum::double(*f),
             _ => return None,
         },
+        Scalar::Decimal(decimal) => return decimal_scalar_to_datum(decimal),
         Scalar::Timestamp(ts) => Datum::timestamp_micros(*ts),
         Scalar::Date(d) => Datum::date(*d),
         Scalar::Boolean(b) => Datum::bool(*b),
@@ -237,4 +241,85 @@ fn scalar_to_datatum(scalar: &Scalar) -> Option<Datum> {
         _ => return None,
     };
     Some(val)
+}
+
+fn decimal_scalar_to_datum(decimal: &DecimalScalar) -> Option<Datum> {
+    let size = decimal.size();
+    let precision = u32::from(size.precision());
+    let scale = u32::from(size.scale());
+
+    let unscaled = match decimal {
+        DecimalScalar::Decimal64(v, _) => i128::from(*v),
+        DecimalScalar::Decimal128(v, _) => *v,
+        DecimalScalar::Decimal256(v, _) => i128::try_from(v.0).ok()?,
+    };
+
+    Some(Datum::new(
+        PrimitiveType::Decimal { precision, scale },
+        PrimitiveLiteral::Int128(unscaled),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use databend_common_column::types::i256;
+    use databend_common_expression::types::decimal::DecimalSize;
+
+    use super::*;
+
+    #[test]
+    fn converts_decimal64_scalar() {
+        let size = DecimalSize::new_unchecked(10, 2);
+        let scalar = DecimalScalar::Decimal64(12345, size);
+        let datum = decimal_scalar_to_datum(&scalar).unwrap();
+
+        assert_eq!(
+            datum,
+            Datum::new(
+                PrimitiveType::Decimal {
+                    precision: 10,
+                    scale: 2,
+                },
+                PrimitiveLiteral::Int128(12345),
+            )
+        );
+    }
+
+    #[test]
+    fn converts_decimal128_scalar() {
+        let size = DecimalSize::new_unchecked(20, 4);
+        let value: i128 = 9876543210;
+        let scalar = DecimalScalar::Decimal128(value, size);
+        let datum = decimal_scalar_to_datum(&scalar).unwrap();
+
+        assert_eq!(
+            datum,
+            Datum::new(
+                PrimitiveType::Decimal {
+                    precision: 20,
+                    scale: 4,
+                },
+                PrimitiveLiteral::Int128(value),
+            )
+        );
+    }
+
+    #[test]
+    fn converts_decimal256_scalar_when_fits_i128() {
+        let size = DecimalSize::new_unchecked(18, 6);
+        let value = i256::from_words(0, 1122334455667788);
+        let scalar = DecimalScalar::Decimal256(value, size);
+        let datum = decimal_scalar_to_datum(&scalar).unwrap();
+
+        assert_eq!(
+            datum,
+            Datum::new(
+                PrimitiveType::Decimal {
+                    precision: 18,
+                    scale: 6,
+                },
+                PrimitiveLiteral::Int128(1122334455667788),
+            )
+        );
+    }
 }
