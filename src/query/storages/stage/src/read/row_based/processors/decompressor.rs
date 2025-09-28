@@ -44,12 +44,12 @@ impl Decompressor {
         })
     }
 
-    fn new_file(&mut self, path: String) {
+    fn new_file(&mut self, path: String, sample: &[u8]) {
         assert!(self.decompressor.is_none());
         let algo = if let Some(algo) = &self.algo {
             Some(algo.to_owned())
         } else {
-            CompressAlgorithm::from_path(&path)
+            CompressAlgorithm::from_path_or_bytes(&path, sample)
         };
         self.path = Some(path);
 
@@ -73,13 +73,12 @@ impl AccumulatingTransform for Decompressor {
             .get_owned_meta()
             .and_then(BytesBatch::downcast_from)
             .unwrap();
-        match &self.path {
-            None => self.new_file(batch.path.clone()),
-            Some(path) => {
-                if path != &batch.path {
-                    self.new_file(batch.path.clone())
-                }
-            }
+        let needs_new_file = match &self.path {
+            Some(path) if path == &batch.path => false,
+            _ => true,
+        };
+        if needs_new_file {
+            self.new_file(batch.path.clone(), &batch.data);
         }
         if matches!(self.algo, Some(CompressAlgorithm::Zip)) {
             let bytes = DecompressDecoder::decompress_all_zip(&batch.data)?;
