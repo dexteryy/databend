@@ -23,6 +23,7 @@ use databend_common_exception::Result;
 use databend_common_expression::types::ArgType;
 use databend_common_expression::types::Decimal;
 use databend_common_expression::types::DecimalSize;
+use databend_common_expression::types::Int32Type;
 use databend_common_expression::types::Int64Type;
 use databend_common_expression::types::Number;
 use databend_common_expression::types::F32;
@@ -237,8 +238,17 @@ fn get_column_stats(
 pub fn parse_datum(data: &Datum) -> Option<Scalar> {
     match data.literal() {
         PrimitiveLiteral::Boolean(v) => Some(Scalar::Boolean(*v)),
-        PrimitiveLiteral::Int(v) => Some(Scalar::Number(i32::upcast_scalar(*v))),
-        PrimitiveLiteral::Long(v) => Some(Int64Type::upcast_scalar(*v)),
+        PrimitiveLiteral::Int(v) => match data.data_type() {
+            PrimitiveType::Date => Some(Scalar::Date(*v)),
+            _ => Some(Int32Type::upcast_scalar(*v)),
+        },
+        PrimitiveLiteral::Long(v) => match data.data_type() {
+            PrimitiveType::Timestamp | PrimitiveType::Timestamptz => Some(Scalar::Timestamp(*v)),
+            PrimitiveType::TimestampNs | PrimitiveType::TimestamptzNs => {
+                Some(Scalar::Timestamp(*v / 1_000))
+            }
+            _ => Some(Int64Type::upcast_scalar(*v)),
+        },
         PrimitiveLiteral::Float(v) => {
             Some(Scalar::Number(F32::upcast_scalar(OrderedFloat::from(v.0))))
         }
@@ -264,5 +274,34 @@ pub fn parse_datum(data: &Datum) -> Option<Scalar> {
         }
         PrimitiveLiteral::AboveMax => None,
         PrimitiveLiteral::BelowMin => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_date_datum() {
+        let datum = Datum::date(5);
+        assert_eq!(parse_datum(&datum), Some(Scalar::Date(5)));
+    }
+
+    #[test]
+    fn test_parse_timestamp_micro_datum() {
+        let datum = Datum::timestamp_micros(1_234_567);
+        assert_eq!(parse_datum(&datum), Some(Scalar::Timestamp(1_234_567)));
+    }
+
+    #[test]
+    fn test_parse_timestamp_nano_datum() {
+        let datum = Datum::timestamp_nanos(9_876_543);
+        assert_eq!(parse_datum(&datum), Some(Scalar::Timestamp(9_876)));
+    }
+
+    #[test]
+    fn test_parse_timestamptz_nano_datum() {
+        let datum = Datum::timestamptz_nanos(2_000);
+        assert_eq!(parse_datum(&datum), Some(Scalar::Timestamp(2)));
     }
 }
